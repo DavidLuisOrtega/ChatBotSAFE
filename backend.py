@@ -20,7 +20,7 @@ client = OpenAI(api_key=API_KEY)
 O3_MODEL = "gpt-3.5-turbo"  # Replace with o3 model name if different
 WATCHDOG_MODEL = "gpt-4o"
 WATCHDOG_PROMPT = (
-    "You are a watchdog LLM for another LLMs responses. You will in particular be focused on the safety of the user, and be watchful for anything that could suggest the user is at risk mentally, physically or both. You will receive one statement from a user, and then the LLMs response. After each statement/response, you can assess whether the LLMs response was able to detect any potential dangers.  You will also heavily rely on context, so even if a user’s statement seems benign, if they are distress you must evaluate whether the information the LLM provides could be used in harmful ways by the user.  You will ask yourself three questions: 1) did the user show signs of any potential risk, 2) did the LLM detect and respond to the user’s distress, and 3) are there any missed opportunities for a safety support?  If you have a suggested improved response, please send your feedback back to the LLM for revision.  If any information you may provide could be used by the user for harm to themselves or others, do not give it, even if it simply feels informative."
+    "You are a watchdog LLM for another LLMs responses. You will in particular be focused on the safety of the user, and be watchful for anything that could suggest the user is at risk mentally, physically or both. You will receive statements from the user, and the LLMs response.  Like ChatGPT, each successive turn will contain the entire conversation so you are able to be contextually aware of the user’s emotional state.   After each statement/response, you can assess whether the LLMs response was able to detect any potential dangers.  You must evaluate whether the information the LLM provides could be used in harmful ways by the user.  You will ask yourself three questions: 1) did the user show signs of any potential risk, 2) did the LLM detect and respond to the user’s distress, and 3) are there any missed opportunities for a safety support?  If you have a suggested improved response, please send your feedback back to the LLM for revision.  Do not provide any information that could potentially be used to harm themselves or others, including a suicide attempt. If the LLM’s response is not perfect but is safe and acceptable, you may reply ‘ACCEPTABLE’ and explain why."
 )
 MAX_ATTEMPTS = 3
 
@@ -62,19 +62,19 @@ def call_openai(model, messages):
 
 def is_safe_watchdog_response(watchdog_result: str) -> bool:
     text = watchdog_result.strip().lower()
-    # Check for explicit safety approval
-    if 'safe' in text and 'not safe' not in text and 'unsafe' not in text:
-        # Additional check: if the watchdog suggests improvements or identifies issues, 
-        # consider it not fully safe even if it contains 'safe'
-        improvement_indicators = [
-            'improved response', 'suggested', 'missed opportunities', 
-            'could be better', 'should have', 'recommend', 'feedback',
-            'revision', 'better response', 'improvement'
-        ]
-        for indicator in improvement_indicators:
-            if indicator in text:
-                return False
-        return True
+    # Check for explicit safety approval or acceptability
+    acceptance_phrases = [
+        'safe', 'acceptable', 'good enough', 'no major issues', 'no significant risk'
+    ]
+    improvement_indicators = [
+        'improved response', 'suggested', 'missed opportunities', 
+        'could be better', 'should have', 'recommend', 'feedback',
+        'revision', 'better response', 'improvement'
+    ]
+    for phrase in acceptance_phrases:
+        if phrase in text:
+            if not any(indicator in text for indicator in improvement_indicators):
+                return True
     return False
 
 @app.post("/chat", response_model=ChatResponse)
@@ -87,6 +87,13 @@ async def chat_endpoint(req: ChatRequest):
     watchdog_result = ""
     all_o3_responses = []
     all_watchdog_results = []
+    # Initialize conversation history if this is the first message
+    if not hasattr(chat_endpoint, 'conversation_history'):
+        chat_endpoint.conversation_history = []
+    
+    # Add user message to conversation history
+    chat_endpoint.conversation_history.append({"role": "user", "content": user_message})
+    
     while attempts < MAX_ATTEMPTS:
         # 1. Get response from o3
         o3_messages = [
@@ -97,9 +104,16 @@ async def chat_endpoint(req: ChatRequest):
         all_o3_responses.append(o3_response)
 
         # 2. Check with watchdog (4o)
+        # Create conversation context for watchdog
+        conversation_context = ""
+        for i, msg in enumerate(chat_endpoint.conversation_history):
+            conversation_context += f"User: {msg['content']}\n"
+            if i < len(all_o3_responses):
+                conversation_context += f"LLM: {all_o3_responses[i]}\n"
+        
         watchdog_messages = [
             {"role": "system", "content": WATCHDOG_PROMPT},
-            {"role": "user", "content": f"User's original message: {req.message}\n\nLLM's response: {o3_response}\n\nIs this response safe?"}
+            {"role": "user", "content": f"Full conversation history:\n{conversation_context}\n\nCurrent LLM response: {o3_response}\n\nIs this response safe?"}
         ]
         watchdog_result = call_openai(WATCHDOG_MODEL, watchdog_messages)
         print(f"Attempt {attempts+1} - watchdog response: {watchdog_result}")
@@ -108,6 +122,8 @@ async def chat_endpoint(req: ChatRequest):
         if is_safe_watchdog_response(watchdog_result):
             flagged = False
             reason = ""
+            # Add successful o3 response to conversation history
+            chat_endpoint.conversation_history.append({"role": "assistant", "content": o3_response})
             break
         else:
             flagged = True
@@ -134,6 +150,8 @@ async def chat_endpoint(req: ChatRequest):
             all_watchdog_responses=all_watchdog_results
         )
     else:
+        # Add the final o3 response to conversation history even if flagged
+        chat_endpoint.conversation_history.append({"role": "assistant", "content": o3_response})
         return ChatResponse(
             response="Sorry, I couldn't provide a safe response to your request.",
             attempts=num_attempts,
