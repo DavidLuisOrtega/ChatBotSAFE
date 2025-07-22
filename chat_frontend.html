@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1976d2">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" sizes="192x192" href="ChatbotSAFE.png">
+    <link rel="apple-touch-icon" href="ChatbotSAFE.png">
+    <title>Chatbot with Safety Watchdog</title>
+    <style>
+        body {
+            font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+            background: #c3f9da;
+            margin: 0;
+            padding: 0;
+        }
+        #chat-container {
+            max-width: 600px;
+            margin: 40px auto;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 2px 16px rgba(0,0,0,0.07);
+            display: flex;
+            flex-direction: column;
+            height: 80vh;
+        }
+        #chat {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px 16px 16px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .msg {
+            display: flex;
+            flex-direction: column;
+            max-width: 75%;
+        }
+        .user-bubble {
+            align-self: flex-end;
+            background: #1976d2;
+            color: #fff;
+            border-radius: 16px 16px 4px 16px;
+            padding: 12px 16px;
+            margin-left: auto;
+            font-size: 1.05em;
+            box-shadow: 0 1px 4px rgba(25, 118, 210, 0.07);
+        }
+        .chatgpt-bubble {
+            align-self: flex-start;
+            background: #f0f4f9;
+            color: #222;
+            border-radius: 16px 16px 16px 4px;
+            padding: 12px 16px;
+            margin-right: auto;
+            font-size: 1.05em;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+        }
+        .watchdog-bubble {
+            align-self: flex-start;
+            background: #fff3cd;
+            color: #856404;
+            border-radius: 16px 16px 16px 4px;
+            padding: 12px 16px;
+            margin-right: auto;
+            font-size: 0.92em;
+            font-style: italic;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+        }
+        #input-row {
+            display: flex;
+            padding: 16px;
+            border-top: 1px solid #eee;
+            background: #fafbfc;
+        }
+        #message {
+            flex: 1;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+            font-size: 1em;
+            outline: none;
+        }
+        #send {
+            padding: 10px 20px;
+            border: none;
+            background: #1976d2;
+            color: #fff;
+            border-radius: 8px;
+            margin-left: 10px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background 0.2s;
+        }
+        #send:disabled {
+            background: #90caf9;
+            cursor: not-allowed;
+        }
+        h2 {
+            margin: 0;
+            padding: 24px 24px 0 24px;
+            font-weight: 600;
+            font-size: 1.5em;
+            color: #1976d2;
+            letter-spacing: -1px;
+            text-align: center;
+        }
+        .header-icon {
+            width: 48px;
+            height: 48px;
+            vertical-align: middle;
+        }
+        .safe-green {
+            color: #43a047;
+            font-weight: 700;
+        }
+        .status-bubble {
+            align-self: center;
+            background: #fff3cd;
+            color: #856404;
+            border-radius: 16px;
+            padding: 8px 16px;
+            margin: 8px auto;
+            font-size: 0.9em;
+            font-style: italic;
+            text-align: center;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+            max-width: 80%;
+        }
+        .chatgpt-label {
+            font-size: 0.92em;
+            color: #1976d2;
+            font-weight: 600;
+            margin-bottom: 2px;
+            margin-left: 2px;
+            text-align: left;
+        }
+        .watchdog-label {
+            font-size: 0.92em;
+            color: #856404;
+            font-weight: 600;
+            margin-bottom: 2px;
+            margin-left: 2px;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <div id="chat-container">
+        <h2><img src="ChatbotSAFE.png" alt="ChatBotSAFE" class="header-icon"></h2>
+        <div style="height: 1.5em;"></div>
+        <div id="chat"></div>
+        <div id="input-row">
+            <input type="text" id="message" placeholder="Type your message..." autocomplete="off" />
+            <button id="send">Send</button>
+        </div>
+    </div>
+    <script>
+        const chat = document.getElementById('chat');
+        const messageInput = document.getElementById('message');
+        const sendBtn = document.getElementById('send');
+        let isSending = false;
+        let currentAttempt = 0;
+        let currentTurn = 0;
+
+        function appendMessage(sender, text, attemptNum, turnNum) {
+            const div = document.createElement('div');
+            div.className = 'msg';
+            if (turnNum !== undefined) div.dataset.turn = turnNum;
+            let bubble = '';
+            let attemptLabel = attemptNum !== undefined ? `<span style='font-size:0.85em;color:#888;margin-right:6px;'>Attempt ${attemptNum}</span>` : '';
+            if (sender === 'user') {
+                bubble = `<div class="user-bubble">${text}</div>`;
+            } else if (sender === 'chatgpt') {
+                bubble = `${attemptLabel}<div class="chatgpt-label">ChatGPT</div><div class="chatgpt-bubble">${text}</div>`;
+            } else if (sender === 'watchdog') {
+                bubble = `${attemptLabel}<div class="watchdog-label">Watchdog Report</div><div class="watchdog-bubble"><img src="Safety.jpeg" alt="Watchdog" style="width:18px;height:18px;margin-right:6px;vertical-align:middle;">${text}</div>`;
+            } else {
+                bubble = `<div class="chatgpt-bubble">${text}</div>`;
+            }
+            chat.appendChild(div);
+            div.innerHTML = bubble;
+            chat.scrollTop = chat.scrollHeight;
+            return div;
+        }
+
+        // Helper to get or create a live bubble for streaming
+        function getOrCreateLiveBubble(sender, attemptNum) {
+            // Try to find the last bubble for this sender and attempt
+            const bubbles = Array.from(chat.querySelectorAll('.msg'));
+            for (let i = bubbles.length - 1; i >= 0; i--) {
+                const el = bubbles[i];
+                if (el.dataset.sender === sender && el.dataset.attempt == attemptNum) {
+                    return el;
+                }
+            }
+            // If not found, create a new one
+            const div = document.createElement('div');
+            div.className = 'msg';
+            div.dataset.sender = sender;
+            div.dataset.attempt = attemptNum;
+            let attemptLabel = attemptNum !== undefined ? `<span style='font-size:0.85em;color:#888;margin-right:6px;'>Attempt ${attemptNum}</span>` : '';
+            if (sender === 'chatgpt') {
+                div.innerHTML = `${attemptLabel}<div class="chatgpt-label">ChatGPT</div><div class="chatgpt-bubble"></div>`;
+            } else if (sender === 'watchdog') {
+                div.innerHTML = `${attemptLabel}<div class="watchdog-label">Watchdog Report</div><div class="watchdog-bubble"><img src="Safety.jpeg" alt="Watchdog" style="width:18px;height:18px;margin-right:6px;vertical-align:middle;"><span class="watchdog-stream"></span></div>`;
+            }
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+            return div;
+        }
+
+        async function sendMessage() {
+            if (isSending) return;
+            const text = messageInput.value.trim();
+            if (!text) return;
+            currentAttempt += 1;
+            currentTurn += 1;
+            appendMessage('user', text, undefined, currentTurn);
+            messageInput.value = '';
+            sendBtn.disabled = true;
+            isSending = true;
+
+            // Show o3 thinking status immediately
+            // clearStatusMessages();
+            appendStatusMessage('o3_thinking', 'o3 model is thinking...', currentTurn);
+            
+            try {
+                const response = await fetch('http://localhost:8000/chat-stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text })
+                });
+                
+                if (!response.ok) throw new Error('Server error');
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                console.log('[SSE data]', data);
+                                switch (data.status) {
+                                    case 'o3_thinking':
+                                        // clearStatusMessages();
+                                        appendStatusMessage('o3_thinking', data.message, currentTurn);
+                                        break;
+                                    case 'o3_response_chunk': {
+                                        let div = chat.querySelector(`.msg[data-sender='chatgpt'][data-attempt='${data.attempt}'][data-turn='${currentTurn}']`);
+                                        if (!div) {
+                                            div = document.createElement('div');
+                                            div.className = 'msg';
+                                            div.dataset.sender = 'chatgpt';
+                                            div.dataset.attempt = data.attempt;
+                                            div.dataset.turn = currentTurn;
+                                            let attemptLabel = `<span style='font-size:0.85em;color:#888;margin-right:6px;'>Attempt ${data.attempt}</span>`;
+                                            div.innerHTML = `${attemptLabel}<div class="chatgpt-label">ChatGPT</div><div class="chatgpt-bubble"></div>`;
+                                            chat.appendChild(div);
+                                            chat.scrollTop = chat.scrollHeight;
+                                        }
+                                        const bubble = div.querySelector('.chatgpt-bubble');
+                                        bubble.textContent = data.accum;
+                                        chat.scrollTop = chat.scrollHeight;
+                                        break;
+                                    }
+                                    case 'o3_response_done':
+                                        // Optionally finalize the bubble
+                                        break;
+                                    case 'watchdog_assessing':
+                                        // clearStatusMessages();
+                                        appendStatusMessage('watchdog_assessing', data.message, currentTurn);
+                                        break;
+                                    case 'watchdog_response_chunk': {
+                                        let div = chat.querySelector(`.msg[data-sender='watchdog'][data-attempt='${data.attempt}'][data-turn='${currentTurn}']`);
+                                        if (!div) {
+                                            div = document.createElement('div');
+                                            div.className = 'msg';
+                                            div.dataset.sender = 'watchdog';
+                                            div.dataset.attempt = data.attempt;
+                                            div.dataset.turn = currentTurn;
+                                            let attemptLabel = `<span style='font-size:0.85em;color:#888;margin-right:6px;'>Attempt ${data.attempt}</span>`;
+                                            div.innerHTML = `${attemptLabel}<div class="watchdog-label">Watchdog Report</div><div class="watchdog-bubble"><img src="Safety.jpeg" alt="Watchdog" style="width:18px;height:18px;margin-right:6px;vertical-align:middle;"><span class="watchdog-stream"></span></div>`;
+                                            chat.appendChild(div);
+                                            chat.scrollTop = chat.scrollHeight;
+                                        }
+                                        const bubble = div.querySelector('.watchdog-stream');
+                                        if (bubble) {
+                                            bubble.textContent = data.accum;
+                                        } else {
+                                            const fallback = div.querySelector('.watchdog-bubble');
+                                            if (fallback) fallback.textContent = data.accum;
+                                        }
+                                        chat.scrollTop = chat.scrollHeight;
+                                        break;
+                                    }
+                                    case 'watchdog_response_done':
+                                        // Optionally finalize the bubble
+                                        break;
+                                    case 'revision_needed':
+                                        // clearStatusMessages();
+                                        appendStatusMessage('revision_needed', data.message, currentTurn);
+                                        break;
+                                    case 'complete':
+                                        // clearStatusMessages();
+                                        // Do not remove status messages; keep them in chat history
+                                        // No need to append responses here, already handled above
+                                        break;
+                                    case 'failed':
+                                        // clearStatusMessages();
+                                        // Do not remove status messages; keep them in chat history
+                                        // No need to append responses here, already handled above
+                                        break;
+                                }
+                            } catch (e) {
+                                console.error('Error parsing SSE data:', e);
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                appendMessage('chatgpt', 'Error: ' + err.message);
+            } finally {
+                sendBtn.disabled = false;
+                isSending = false;
+                messageInput.focus();
+            }
+        }
+        
+        function appendStatusMessage(status, message, turnNum) {
+            const div = document.createElement('div');
+            div.className = 'msg status-message';
+            if (turnNum !== undefined) div.dataset.turn = turnNum;
+            div.innerHTML = `<div class="status-bubble">${message}</div>`;
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+            return div;
+        }
+
+        function clearStatusMessages() {
+            // Remove all status-message elements
+            const statusMessages = chat.querySelectorAll('.status-message');
+            statusMessages.forEach(el => el.remove());
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
+</body>
+</html> 

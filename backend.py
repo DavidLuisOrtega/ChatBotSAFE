@@ -1,9 +1,12 @@
 import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
+import asyncio
+import json
+import time
 
 # Load OpenAI API key from environment variable or file
 API_KEY = os.getenv("OPENAI_API_KEY")
@@ -62,9 +65,11 @@ def call_openai(model, messages):
 
 def is_safe_watchdog_response(watchdog_result: str) -> bool:
     text = watchdog_result.strip().lower()
-    # Check for explicit safety approval or acceptability
+    # If 'acceptable' is present, always treat as safe
+    if 'acceptable' in text:
+        return True
     acceptance_phrases = [
-        'safe', 'acceptable', 'good enough', 'no major issues', 'no significant risk'
+        'safe', 'good enough', 'no major issues', 'no significant risk'
     ]
     improvement_indicators = [
         'improved response', 'suggested', 'missed opportunities', 
@@ -76,6 +81,21 @@ def is_safe_watchdog_response(watchdog_result: str) -> bool:
             if not any(indicator in text for indicator in improvement_indicators):
                 return True
     return False
+
+def stream_openai(model, messages):
+    # Generator that yields each chunk of the response as it arrives
+    stream = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=0.7,
+        stream=True
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        if hasattr(delta, 'content') and delta.content:
+            yield delta.content
+        else:
+            print(f"[stream_openai] WARNING: No 'content' in delta: {delta}")
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest):
@@ -163,11 +183,114 @@ async def chat_endpoint(req: ChatRequest):
             all_watchdog_responses=all_watchdog_results
         )
 
-@app.post("/watchdog")
-async def watchdog_endpoint(req: WatchdogRequest):
-    watchdog_messages = [
-        {"role": "system", "content": WATCHDOG_PROMPT},
-        {"role": "user", "content": req.message}
-    ]
-    watchdog_result = call_openai(WATCHDOG_MODEL, watchdog_messages)
-    return JSONResponse({"response": watchdog_result}) 
+@app.post("/chat-stream")
+async def chat_stream_endpoint(req: ChatRequest):
+    async def generate():
+        user_message = req.message
+        attempts = 0
+        flagged = False
+        reason = ""
+        o3_response = ""
+        watchdog_result = ""
+        all_o3_responses = []
+        all_watchdog_results = []
+        
+        # Initialize conversation history if this is the first message
+        if not hasattr(chat_stream_endpoint, 'conversation_history'):
+            chat_stream_endpoint.conversation_history = []
+        
+        # Add user message to conversation history
+        chat_stream_endpoint.conversation_history.append({"role": "user", "content": user_message})
+        
+        while attempts < MAX_ATTEMPTS:
+            # Status: o3 is thinking
+            yield f"data: {json.dumps({'status': 'o3_thinking', 'message': 'o3 model is thinking...'})}{' ' * 1024}\n\n"
+            await asyncio.sleep(0)
+            yield ":\n"
+            await asyncio.sleep(0)
+            
+            # 1. Get response from o3 (streaming)
+            o3_messages = [
+                {"role": "user", "content": user_message}
+            ]
+            o3_response_accum = ""
+            for chunk in stream_openai(O3_MODEL, o3_messages):
+                o3_response_accum += chunk
+                print(f"[o3_response_chunk] attempt={attempts+1} chunk=", repr(chunk), "accum=", repr(o3_response_accum))
+                yield f"data: {json.dumps({'status': 'o3_response_chunk', 'chunk': chunk, 'accum': o3_response_accum, 'attempt': attempts + 1})}{' ' * 1024}\n\n"
+                await asyncio.sleep(0)
+                yield ":\n"
+                await asyncio.sleep(0)
+            o3_response = o3_response_accum
+            print(f"[o3_response_done] attempt={attempts+1} full_response=", repr(o3_response))
+            all_o3_responses.append(o3_response)
+            yield f"data: {json.dumps({'status': 'o3_response_done', 'attempt': attempts + 1})}{' ' * 1024}\n\n"
+            await asyncio.sleep(0)
+            yield ":\n"
+            await asyncio.sleep(0)
+
+            # Status: Watchdog is assessing
+            yield f"data: {json.dumps({'status': 'watchdog_assessing', 'message': 'Watchdog model assessing safety...'})}{' ' * 1024}\n\n"
+            await asyncio.sleep(0)
+            yield ":\n"
+            await asyncio.sleep(0)
+
+            # 2. Check with watchdog (streaming)
+            conversation_context = ""
+            for i, msg in enumerate(chat_stream_endpoint.conversation_history):
+                conversation_context += f"User: {msg['content']}\n"
+                if i < len(all_o3_responses):
+                    conversation_context += f"LLM: {all_o3_responses[i]}\n"
+            watchdog_messages = [
+                {"role": "system", "content": WATCHDOG_PROMPT},
+                {"role": "user", "content": f"Full conversation history:\n{conversation_context}\n\nCurrent LLM response: {o3_response}\n\nIs this response safe?"}
+            ]
+            watchdog_response_accum = ""
+            for chunk in stream_openai(WATCHDOG_MODEL, watchdog_messages):
+                watchdog_response_accum += chunk
+                yield f"data: {json.dumps({'status': 'watchdog_response_chunk', 'chunk': chunk, 'accum': watchdog_response_accum, 'attempt': attempts + 1})}{' ' * 1024}\n\n"
+                await asyncio.sleep(0)
+                yield ":\n"
+                await asyncio.sleep(0)
+            watchdog_result = watchdog_response_accum
+            safe = is_safe_watchdog_response(watchdog_result)
+            all_watchdog_results.append(watchdog_result)
+            yield f"data: {json.dumps({'status': 'watchdog_response_done', 'attempt': attempts + 1})}{' ' * 1024}\n\n"
+            await asyncio.sleep(0)
+            yield ":\n"
+            await asyncio.sleep(0)
+
+            if safe:
+                flagged = False
+                reason = ""
+                chat_stream_endpoint.conversation_history.append({"role": "assistant", "content": o3_response})
+                # Status: Complete
+                yield f"data: {json.dumps({'status': 'complete', 'response': o3_response, 'attempts': attempts + 1, 'watchdog_feedback': watchdog_result, 'all_chatgpt_responses': all_o3_responses, 'all_watchdog_responses': all_watchdog_results})}{' ' * 1024}\n\n"
+                await asyncio.sleep(0)
+                yield ":\n"
+                await asyncio.sleep(0)
+                break
+            else:
+                flagged = True
+                reason = watchdog_result.strip()
+                # Status: Revision needed
+                yield f"data: {json.dumps({'status': 'revision_needed', 'message': 'Watchdog sending response back to o3 for revision...'})}{' ' * 1024}\n\n"
+                await asyncio.sleep(0)
+                yield ":\n"
+                await asyncio.sleep(0)
+                
+                user_message = (
+                    f"Your previous response was flagged by a safety watchdog as UNSAFE with the following assessment:\n"
+                    f"{reason}\n"
+                    f"Please revise your answer to ensure it is SAFE according to the watchdog's criteria. Address the concerns above. Original user message: {req.message}"
+                )
+            attempts += 1
+
+        if flagged:
+            chat_stream_endpoint.conversation_history.append({"role": "assistant", "content": o3_response})
+            yield f"data: {json.dumps({'status': 'failed', 'response': 'Sorry, I could not provide a safe response to your request.', 'attempts': attempts, 'watchdog_feedback': watchdog_result, 'all_chatgpt_responses': all_o3_responses, 'all_watchdog_responses': all_watchdog_results})}{' ' * 1024}\n\n"
+            await asyncio.sleep(0)
+            yield ":\n"
+            await asyncio.sleep(0)
+
+    return StreamingResponse(generate(), media_type="text/event-stream") 
