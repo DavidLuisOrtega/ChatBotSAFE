@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""
+convert_pdf_to_spreadsheet.py
+
+Usage
+-----
+python convert_pdf_to_spreadsheet.py \
+       --pdf "Mid-to-Large Mobile Game Development Outsourcing Partners (Worldwide).pdf" \
+       --out_csv "outsourcing_partners.csv" \
+       --out_xlsx "outsourcing_partners.xlsx"
+
+What it does
+------------
+1. Opens the PDF with pdfplumber (pure-Python, no Java/CLI dependencies).
+2. Reads every page, pulling text into a single buffer.
+3. Uses regular expressions to detect the 100 company “blocks”
+   (they always end at a line that starts with “Email:” or “LinkedIn:”).
+4. From each block it extracts:
+      • Company  
+      • Location  
+      • Website (first HTTP/S URL on the block)  
+      • Services Offered  
+      • Notable Games / Clients  
+      • Key Personnel  
+      • Contact (Email / LinkedIn / “Contact form”)  
+5. Saves the parsed rows to a CSV and an XLSX file via pandas.
+
+Dependencies
+------------
+pip install pdfplumber pandas openpyxl
+"""
+
+import argparse
+import re
+import pdfplumber
+import pandas as pd
+
+BLOCK_END_PAT = re.compile(r"(Email:\

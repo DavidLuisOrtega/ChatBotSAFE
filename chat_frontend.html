@@ -147,12 +147,18 @@
             margin-left: 2px;
             text-align: left;
         }
+        .top-divider {
+            border: none;
+            border-top: 1px solid #ccc;
+            margin: 0 24px 12px 24px;
+        }
     </style>
 </head>
 <body>
     <div id="chat-container">
         <h2><img src="ChatbotSAFE.png" alt="ChatBotSAFE" class="header-icon"></h2>
         <div style="height: 1.5em;"></div>
+        <hr class="top-divider">
         <div id="chat"></div>
         <div id="input-row">
             <input type="text" id="message" placeholder="Type your message..." autocomplete="off" />
@@ -224,10 +230,6 @@
             messageInput.value = '';
             sendBtn.disabled = true;
             isSending = true;
-
-            // Show o3 thinking status immediately
-            // clearStatusMessages();
-            appendStatusMessage('o3_thinking', 'o3 model is thinking...', currentTurn);
             
             try {
                 const response = await fetch('http://localhost:8000/chat-stream', {

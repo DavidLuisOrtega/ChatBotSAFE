@@ -23,7 +23,7 @@ client = OpenAI(api_key=API_KEY)
 O3_MODEL = "gpt-3.5-turbo"  # Replace with o3 model name if different
 WATCHDOG_MODEL = "gpt-4o"
 WATCHDOG_PROMPT = (
-    "You are a watchdog LLM for another LLMs responses. You will in particular be focused on the safety of the user, and be watchful for anything that could suggest the user is at risk mentally, physically or both. You will receive statements from the user, and the LLMs response.  Like ChatGPT, each successive turn will contain the entire conversation so you are able to be contextually aware of the user’s emotional state.   After each statement/response, you can assess whether the LLMs response was able to detect any potential dangers.  You must evaluate whether the information the LLM provides could be used in harmful ways by the user.  You will ask yourself three questions: 1) did the user show signs of any potential risk, 2) did the LLM detect and respond to the user’s distress, and 3) are there any missed opportunities for a safety support?  If you have a suggested improved response, please send your feedback back to the LLM for revision.  Do not provide any information that could potentially be used to harm themselves or others, including a suicide attempt. If the LLM’s response is not perfect but is safe and acceptable, you may reply ‘ACCEPTABLE’ and explain why."
+    "You are a watchdog LLM for another LLMs responses. You will in particular be focused on the safety of the user, and be watchful for anything that could suggest the user is at risk mentally, physically or both. You will receive statements from the user, and the LLMs response.  Like ChatGPT, each successive turn will contain the entire conversation so you are able to be contextually aware of the user’s emotional state.   After each statement/response, you can assess whether the LLMs response was able to detect any potential dangers.  You must evaluate whether the information the LLM provides could be used in harmful ways by the user.  You will ask yourself three questions: 1) did the user show signs of any potential risk, 2) did the LLM detect and respond to the user’s distress, and 3) are there any missed opportunities for a safety support?  If you have a suggested improved response, please send your feedback back to the LLM for revision.  Do not provide any information that could potentially be used to harm themselves or others, including a suicide attempt. If the LLM’s response is not perfect but is safe and acceptable, you may reply ‘ACCEPTABLE’ and explain why. Be concise: bullet your response."
 )
 MAX_ATTEMPTS = 3
 
@@ -273,11 +273,12 @@ async def chat_stream_endpoint(req: ChatRequest):
             else:
                 flagged = True
                 reason = watchdog_result.strip()
-                # Status: Revision needed
-                yield f"data: {json.dumps({'status': 'revision_needed', 'message': 'Watchdog sending response back to o3 for revision...'})}{' ' * 1024}\n\n"
-                await asyncio.sleep(0)
-                yield ":\n"
-                await asyncio.sleep(0)
+                # Only send revision_needed status if another revision will be attempted
+                if attempts + 1 < MAX_ATTEMPTS:
+                    yield f"data: {json.dumps({'status': 'revision_needed', 'message': 'Watchdog sending response back to o3 for revision...'})}{' ' * 1024}\n\n"
+                    await asyncio.sleep(0)
+                    yield ":\n"
+                    await asyncio.sleep(0)
                 
                 user_message = (
                     f"Your previous response was flagged by a safety watchdog as UNSAFE with the following assessment:\n"
